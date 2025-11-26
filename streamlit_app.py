@@ -7,11 +7,22 @@ import os
 import json
 import html
 import re
+import logging
+import traceback
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
-import boto3
+import requests
 import streamlit as st
+
+# -----------------------------------------------------------------------------
+# LOGGING SETUP
+# -----------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION
@@ -29,15 +40,21 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 
 BEDROCK_API_KEY = os.environ.get("BEDROCK_API_KEY")
-
+BEDROCK_REGION = os.getenv("AWS_BEDROCK_REGION", "us-east-1")
 if BEDROCK_API_KEY:
-    # New Bedrock bearer-token auth uses AWS_BEARER_TOKEN_BEDROCK
     if "AWS_BEARER_TOKEN_BEDROCK" not in os.environ:
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = BEDROCK_API_KEY
 else:
-    st.error("❌ BEDROCK_API_KEY environment variable is not set; LLM will not be available.")
+    msg = "BEDROCK_API_KEY environment variable is not set; LLM will not be available."
+    logging.warning(msg)
+    st.error("❌ " + msg)
 
-BEDROCK_MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"  # adjust if needed
+    import requests
+
+
+
+BEDROCK_MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+
 
 # -----------------------------------------------------------------------------
 # SYSTEM PROMPT FOR CLAUDE
@@ -54,26 +71,302 @@ When you receive an assessment payload, return a JSON response with:
 
 ## Birmingham Support Resources Database
 
-[TRUNCATED HERE IN THIS MESSAGE FOR BREVITY – KEEP YOUR FULL PROMPT TEXT]
-"""
+Use these verified Birmingham-specific services. Match services to the person's identified needs based on their assessment scores and risk flags.
 
-# Keep your full prompt – I’ve shortened it here just to save space in the chat.
-# In your actual file, paste the entire prompt block you had.
+### HOMELESSNESS SERVICES (Birmingham Council)
+
+**Birmingham Council Homelessness Line**
+- URL: https://www.birmingham.gov.uk/homeless
+- Phone: 0121 303 7410 (Over 18) | 0121 303 1888 (Under 18)
+- Description: 24/7 homelessness advice, emergency contacts, duty to refer
+- Use when: Housing stability score high, immediate homelessness risk
+
+**Housing Needs Assessment**
+- URL: https://www.birmingham.gov.uk/housingneeds
+- Description: Online form to apply if at risk within 56 days
+- Use when: Housing uncertain but not immediate crisis
+
+**Emergency Accommodation (25+ or 18-25 with children)**
+- URL: https://www.birmingham.gov.uk/info/20207/homelessness/1196/i_need_accommodation_now
+- Description: Temporary accommodation process and DA hub contacts
+- Use when: Immediate housing need, domestic abuse situation
+
+### YOUTH HOMELESSNESS (16-24)
+
+**St Basils Youth Hub**
+- URL: https://stbasils.org.uk/hub/birmingham/
+- Phone: 0121 439 7766
+- Description: Single access hub for 16-24s: prevention, mediation, housing options
+- Use when: Under 25, any housing concern
+
+### DOMESTIC VIOLENCE & ABUSE
+
+**Birmingham & Solihull Women's Aid**
+- URL: https://bswaid.org/i-need-help/
+- Phone: 0808 800 0028
+- Description: Helpline, refuges, drop-in, webchat for women and children
+- Use when: Female, abuse/safety concerns
+
+**Anawim Centre for Women**
+- URL: https://anawim.co.uk/
+- Description: Trauma-informed support including housing, mental health, legal advocacy
+- Use when: Female, abuse + mental health concerns
+
+**Gilgal Birmingham Refuge**
+- URL: https://gilgalbham.org.uk/
+- Description: Safe housing for women and children fleeing abuse
+- Use when: Female with/without children, fleeing abuse
+
+**WAITS Refuge**
+- URL: https://www.waitsaction.org/who-we-are/refuge-accommodation
+- Description: Refuge for single women 21+
+- Use when: Female 21+, fleeing abuse, no children
+
+**Council DA Services Directory**
+- URL: https://www.birmingham.gov.uk/info/50350/domestic_abuse/2980/help_for_victims_and_survivors_of_domestic_abuse
+- Description: Comprehensive list including services for women, men, LGBT+
+- Use when: Any abuse situation, need multiple options
+
+**No Excuse for Abuse Directory**
+- URL: https://noexcuseforabuse.info/locations/birmingham/
+- Description: Aggregated contacts including LGBT and ethnic minority services
+- Use when: Abuse situation, diverse needs
+
+### MENTAL HEALTH
+
+**Birmingham Mind - Housing Support**
+- URL: https://birminghammind.org/services/housing/
+- Phone: 0121 262 3555
+- Description: Mental health support and housing advice
+- Use when: Mental health flagged, any housing concern
+
+**Birmingham Mind - Supported Accommodation**
+- URL: https://birminghammind.org/what-we-do/supported-accommodation/
+- Description: Supported housing for adults with MH difficulties
+- Use when: Mental health significant, needs supported housing
+
+**Birmingham Mind - Tenancy Support**
+- URL: https://birminghammind.org/what-we-do/support-in-your-community-and-your-own-home/
+- Description: Support to sustain tenancies for adults with MH conditions
+- Use when: Mental health concerns + at risk of losing tenancy
+
+**Birmingham Mind - Homelessness Contacts**
+- URL: https://birminghammind.org/what-we-do/helpline/homelessness/
+- Description: Signposting for homelessness including council and St Basils contacts
+- Use when: Mental health + homelessness combination
+
+**Birmingham Crisis Centre**
+- URL: https://www.birminghamcrisis.org.uk/
+- Description: Emergency accommodation for those in mental health crisis
+- Use when: Mental health crisis, needs emergency accommodation
+
+### SUBSTANCE MISUSE
+
+**Change Grow Live Birmingham**
+- URL: https://www.changegrowlive.org/service/birmingham-drug-alcohol
+- Description: Adult drug & alcohol hubs across Birmingham
+- Use when: Substance misuse mentioned in additional context
+
+**Aquarius (Under 25s)**
+- URL: https://aquarius.org.uk/
+- Description: Drug & alcohol service for up to 25s
+- Use when: Under 25, substance issues
+
+**Cranstoun (Women - DA + Addiction)**
+- URL: https://www.cranstoun.org/services/domestic-abuse/
+- Description: Specialist services for women facing domestic abuse and addiction
+- Use when: Female, abuse + substance issues
+
+### DEBT & FINANCIAL
+
+**Citizens Advice Birmingham**
+- URL: https://www.citizensadvice.org.uk/local/birmingham/
+- Phone: 0808 278 7973
+- Description: Rent arrears, eviction prevention, benefits advice
+- Use when: Financial pressure high, debt, benefits uncertainty
+
+**Citizens Advice - Rent Arrears Guide**
+- URL: https://www.citizensadvice.org.uk/debt-and-money/rent-arrears/
+- Description: National guidance on dealing with arrears and eviction
+- Use when: Rent arrears specifically mentioned
+
+**Birmingham Council Rent Arrears**
+- URL: https://www.birmingham.gov.uk/rentarrears
+- Description: Council tenant support
+- Use when: Council tenant with rent issues
+
+**StepChange**
+- URL: https://www.stepchange.org/
+- Phone: 0800 138 1111
+- Description: Free debt advice and solutions
+- Use when: Debt issues, financial crisis
+
+### CARE LEAVERS
+
+**Birmingham Children's Trust (18-21)**
+- URL: https://www.birminghamchildrenstrust.co.uk/info/2/information_for_children_and_young_people/28/support_for_18_to_21_year_olds_who_have_been_in_care
+- Description: Support for care leavers transitioning to independent living
+- Use when: Care leaver identified
+
+**Shelter - Care Leaver Housing Rights**
+- URL: https://england.shelter.org.uk/housing_advice/homelessness/housing_help_and_homelessness_if_you_are_a_care_leaver
+- Description: Explains entitlements and priority need criteria
+- Use when: Care leaver, needs to understand rights
+
+### EX-OFFENDERS / PRISON LEAVERS
+
+**Birmingham Council - Prisoners & Ex-Offenders**
+- URL: https://www.birmingham.gov.uk/info/50113/housing_advice_and_support/1221/prisoners_and_ex-offenders/2
+- Description: Guidance on support on release, homelessness assistance
+- Use when: Prison/institutional discharge identified
+
+**St Giles Trust**
+- URL: https://www.stgilestrust.org.uk/
+- Description: Helps ex-offenders reintegrate and avoid homelessness
+- Use when: Prison release, resettlement needs
+
+**Nacro Birmingham**
+- URL: https://homeless.org.uk/homeless-england/service/nacro-birmingham-offender-housing/
+- Description: Supported accommodation for single adults including MH and substance issues
+- Use when: Ex-offender + mental health or substance issues
+
+### REFUGEES & ASYLUM SEEKERS
+
+**Refugee Council**
+- URL: https://www.refugeecouncil.org.uk/
+- Description: Housing advice for asylum seekers
+- Use when: Refugee/asylum status identified
+
+**Refugee & Migrant Centre**
+- URL: https://rmcentre.org.uk/get-help/
+- Description: Holistic support including immigration, housing & homelessness
+- Use when: Migrant, asylum seeker, refugee in Birmingham
+
+**St Chad's Sanctuary**
+- URL: http://www.stchadssanctuary.com/
+- Description: Welcome centre providing practical support
+- Use when: Asylum seeker, immediate practical needs
+
+**Birmingham City of Sanctuary**
+- URL: https://www.birmingham.gov.uk/info/50227/city_of_sanctuary/2512/asylum_support_in_birmingham
+- Description: Local support directories and contacts
+- Use when: Asylum seeker, needs directory of services
+
+### ARMED FORCES / VETERANS
+
+**SSAFA Greater Birmingham**
+- URL: https://www.ssafa.org.uk/greater-birmingham
+- Description: Local welfare and housing support for veterans
+- Use when: Armed forces/veteran identified
+
+**Birmingham Council - Ex-Armed Forces**
+- URL: https://www.birmingham.gov.uk/info/50113/housing_advice_and_support/1222/ex-armed_forces_personnel/2
+- Description: Housing options including supported accommodation
+- Use when: Veteran with housing needs
+
+**Veterans Aid**
+- URL: https://www.veteransaid.net/
+- Description: Emergency accommodation for homeless veterans
+- Use when: Veteran, immediate homelessness
+
+**Haig Housing**
+- URL: https://www.haighousing.org.uk/
+- Description: Supported housing provider for veterans
+- Use when: Veteran needs longer-term housing
+
+### ROUGH SLEEPING
+
+**Trident Reach Homeless Services**
+- URL: https://tridentgroup.org.uk/care-support/homeless-services/
+- Description: Outreach, emergency beds, supported housing
+- Use when: Rough sleeping, immediate street homelessness
+
+**Washington Court Hub**
+- URL: https://homeless.org.uk/homeless-england/service/trident-reach-washington-court-hub/
+- Phone: 0121 675 4249 (Gateway referral)
+- Description: Large supported facility including rooms for women (21+)
+- Use when: 21+, needs supported accommodation
+
+**SIFA Fireside**
+- URL: https://www.birmingham.gov.uk/info/20207/homelessness/1216/homeless_advice
+- Description: Day centre with housing advice, welfare and health services (25+)
+- Use when: 25+, rough sleeping, needs daytime support
+
+### GENERAL ADVICE & DIRECTORIES
+
+**Shelter Birmingham**
+- URL: https://england.shelter.org.uk/get_help/local_services/birmingham
+- Phone: 0808 800 4444
+- Description: Legal Aid housing advice, emergency helpline, webchat
+- Use when: Any housing issue, needs expert advice
+
+**Crisis Skylight Birmingham**
+- URL: https://www.crisis.org.uk/get-help/birmingham/
+- Description: Support to leave homelessness, find housing/work/health support
+- Use when: Homeless or at risk, needs comprehensive support
+
+**Route 2 Wellbeing Directory**
+- URL: https://r2wbirmingham.info
+- Description: Directory of housing advice/support services in Birmingham
+- Use when: Needs to browse multiple options
+
+## Response Guidelines
+
+1. **Tone**: Warm, non-judgmental, empowering. Avoid bureaucratic language.
+2. **Prioritise by risk flags**: List most urgent services first based on their specific concerns.
+3. **Be specific**: Match 3-5 services to their actual situation, don't overwhelm with options.
+4. **Include contact methods**: Phone numbers are essential for urgent cases.
+5. **Age-appropriate**: Under 25 → St Basils; 25+ → Council/adult services.
+6. **Acknowledge urgency**: HIGH risk = emphasise immediate options and phone numbers.
+
+## Response Format
+
+Return ONLY valid JSON with no additional text:
+
+{
+  "user_response": {
+    "greeting": "Empathetic opening acknowledging their situation",
+    "support_links": [
+      {
+        "name": "Service Name",
+        "url": "https://...",
+        "phone": "phone number or null",
+        "description": "How this specifically helps them",
+        "priority": "high|medium|low"
+      }
+    ],
+    "next_steps": "Clear guidance on what happens next",
+    "emergency_note": "Only if HIGH risk or crisis - include key phone numbers, otherwise null"
+  },
+  "officer_summary": {
+    "risk_level": "HIGH|MEDIUM|LOW",
+    "key_concerns": ["List of main issues"],
+    "recommended_actions": ["Suggested officer actions"],
+    "referral_suggestions": ["Services to refer to"],
+    "notes": "Additional observations"
+  }
+}"""
 
 # -----------------------------------------------------------------------------
-# CSS STYLES
+# CSS STYLES – DARK BACKGROUND + CLEAR TEXT
 # -----------------------------------------------------------------------------
 
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     
+    html, body, [data-testid="stAppViewContainer"] {
+        background-color: #020617;
+        color: #e5e7eb;
+    }
     .stApp { font-family: 'Inter', sans-serif; }
     #MainMenu, footer, header { visibility: hidden; }
-    
+
+    a { color: #38bdf8; }
+
     .header-banner {
         background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
-        color: white;
+        color: #ffffff;
         padding: 1.5rem 2rem;
         border-radius: 12px;
         margin-bottom: 1.5rem;
@@ -83,12 +376,13 @@ st.markdown("""
     .header-banner p { margin: 0.5rem 0 0 0; opacity: 0.9; }
     
     .question-container {
-        background: white;
-        border: 1px solid #e2e8f0;
+        background: #020617;
+        border: 1px solid #1f2937;
         border-radius: 16px;
         padding: 2rem;
         margin: 1.5rem 0;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        color: #e5e7eb;
     }
     
     .question-number {
@@ -105,7 +399,7 @@ st.markdown("""
     .question-text {
         font-size: 1.25rem;
         font-weight: 500;
-        color: #1e293b;
+        color: #e5e7eb;
         line-height: 1.5;
         margin-bottom: 1.5rem;
     }
@@ -117,15 +411,21 @@ st.markdown("""
         font-weight: 600;
         font-size: 0.9rem;
     }
-    .risk-low { background: #dcfce7; color: #166534; }
-    .risk-medium { background: #fef3c7; color: #92400e; }
-    .risk-high { background: #fee2e2; color: #991b1b; }
+    .risk-low { background: #14532d; color: #bbf7d0; }
+    .risk-medium { background: #92400e; color: #fef3c7; }
+    .risk-high { background: #7f1d1d; color: #fee2e2; }
     
     .score-display {
         font-size: 3rem;
         font-weight: 700;
-        color: #1e3a5f;
+        color: #e5e7eb;
         text-align: center;
+    }
+
+    .stTextArea textarea {
+        font-size: 1rem !important;
+        line-height: 1.6 !important;
+        min-height: 150px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -274,24 +574,53 @@ assert sum(q["weight"] for q in QUESTIONS) == 100, "Weights must sum to 100"
 # -----------------------------------------------------------------------------
 
 def get_bedrock_client():
+    """
+    Create a Bedrock client.
+
+    IMPORTANT: with current boto3/botocore, you STILL need normal AWS creds
+    (env vars, shared config, or IAM role). The API key alone is not enough
+    unless you're on the very latest SDK with bearer-token support.
+    """
+    logging.info("Creating Bedrock client in us-east-1")
+    print("Creating Bedrock client in us-east-1")
+
+    # Quick sanity check for credentials so you don't get a mysterious traceback
+    session = boto3.Session()
+    creds = session.get_credentials()
+    if creds is None:
+        msg = (
+            "No AWS credentials found. Configure either:\n"
+            "- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (and optional AWS_SESSION_TOKEN), or\n"
+            "- an IAM role / profile with bedrock:InvokeModel permissions."
+        )
+        logging.error(msg)
+        print(msg)
+        st.error("❌ " + msg)
+        return None
+
     try:
-        client = boto3.client(
+        client = session.client(
             service_name="bedrock-runtime",
             region_name="us-east-1"
         )
         return client
     except Exception as e:
+        logging.exception("Could not create Bedrock client")
+        print("Could not create Bedrock client:", repr(e))
+        traceback.print_exc()
         st.error("❌ Could not create Bedrock client")
         st.code(repr(e))
         return None
 
 
 def clean_text_for_html(value: Optional[str]) -> str:
-    """Strip tags, collapse whitespace, escape again."""
+    """
+    Make absolutely sure no tags leak through.
+    """
     if not value:
         return ""
     text = html.unescape(str(value))
-    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)  # strip all tags
     text = re.sub(r"\s+", " ", text).strip()
     return html.escape(text)
 
@@ -332,16 +661,13 @@ def build_llm_payload(responses: Dict, additional_context: str, reference: str) 
                         "keywords": q.get("risk_keywords", [])
                     })
 
-                # Crisis overrides
-                if q_id == "housing_stability":
-                    if answer.startswith("Unstable") or answer.startswith("Crisis"):
-                        crisis_override = True
-                if q_id == "abuse_safety":
-                    if answer.startswith("In immediate danger"):
-                        crisis_override = True
-                if q_id == "mental_health":
-                    if answer.startswith("In crisis"):
-                        crisis_override = True
+                # Crisis overrides HIGH even if total score is borderline
+                if q_id == "housing_stability" and (answer.startswith("Unstable") or answer.startswith("Crisis")):
+                    crisis_override = True
+                if q_id == "abuse_safety" and answer.startswith("In immediate danger"):
+                    crisis_override = True
+                if q_id == "mental_health" and answer.startswith("In crisis"):
+                    crisis_override = True
 
     risk_level, _, risk_desc, response_time = get_risk_band(total_score)
 
@@ -375,58 +701,88 @@ def generate_reference() -> str:
     timestamp = datetime.now().strftime("%Y%m%d%H%M")
     return f"AM-{timestamp}-{abs(hash(timestamp)) % 10000:04d}"
 
-
 def call_bedrock_claude(payload: Dict) -> Optional[Dict]:
-    client = get_bedrock_client()
-    if client is None:
-        st.warning("⚠️ Bedrock client unavailable; using fallback.")
+    """
+    Call Bedrock Converse endpoint over HTTPS using the API key.
+    No boto3, no IAM creds. Logs errors to both Streamlit and terminal.
+    """
+    if not BEDROCK_API_KEY:
+        msg = "No Bedrock API key set (AWS_BEARER_TOKEN_BEDROCK or BEDROCK_API_KEY)."
+        st.error("❌ " + msg)
+        print(msg)
         return None
 
-    st.info("🔍 Calling Bedrock Claude via boto3.converse()")
+    url = (
+        f"https://bedrock-runtime.{BEDROCK_REGION}.amazonaws.com/"
+        f"model/{BEDROCK_MODEL_ID}/converse"
+    )
 
     user_prompt = (
-        "Analyse this Birmingham housing support assessment and provide personalised support "
-        "recommendations.\n\nAssessment Data:\n"
+        "Analyse this Birmingham housing support assessment and provide personalised "
+        "support recommendations.\n\nAssessment Data:\n"
         f"{json.dumps(payload, indent=2)}\n\n"
         "Return ONLY valid JSON following the specified format. No extra text."
     )
 
-    messages = [
-        {
-            "role": "user",
-            "content": [{"text": user_prompt}]
-        }
-    ]
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"text": user_prompt}],
+            }
+        ],
+        "system": [{"text": SYSTEM_PROMPT}],
+        "inferenceConfig": {"maxTokens": 2500},
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {BEDROCK_API_KEY}",
+    }
 
     try:
-        response = client.converse(
-            modelId=BEDROCK_MODEL_ID,
-            messages=messages,
-            system=[{"text": SYSTEM_PROMPT}],
-            inferenceConfig={"maxTokens": 2500},
-        )
-    except Exception as e:
-        st.error("❌ Bedrock request error")
-        st.code(repr(e))
+        resp = requests.post(url, headers=headers, json=body, timeout=30)
+    except requests.RequestException as e:
+        st.error("❌ Bedrock HTTP request error")
+        print("Bedrock HTTP request error:", repr(e))
+        return None
+
+    if not resp.ok:
+        # Show enough to debug, but cap length so Streamlit isn’t flooded
+        msg = f"Bedrock HTTP {resp.status_code}: {resp.text[:500]}"
+        st.error("❌ " + msg)
+        print(msg)
         return None
 
     try:
-        content = response["output"]["message"]["content"][0]["text"]
+        data = resp.json()
     except Exception as e:
-        st.error("❌ Unexpected response format from Bedrock")
-        st.code(json.dumps(response, indent=2))
+        st.error("❌ Could not decode Bedrock JSON response")
+        print("JSON decode error:", repr(e), "raw:", resp.text[:500])
+        return None
+
+    # Same structure as SDK: output.message.content[0].text
+    try:
+        content = data["output"]["message"]["content"][0]["text"]
+    except Exception as e:
+        st.error("❌ Unexpected Bedrock response shape")
+        print("Unexpected shape:", repr(e))
+        print("Raw data:", json.dumps(data, indent=2)[:2000])
         return None
 
     try:
-        parsed = json.loads(content)
-        return parsed
-    except json.JSONDecodeError:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
         st.error("❌ LLM returned invalid JSON")
-        st.code(content[:2000])
+        print("JSON parse error:", repr(e))
+        print("Raw LLM text:", content[:2000])
         return None
+
 
 
 def get_fallback_response(payload: Dict) -> Dict:
+    logging.warning("Using fallback response – LLM unavailable")
+    print("Using fallback response – LLM unavailable")
     risk_level = payload.get("assessment", {}).get("risk_level", "MEDIUM")
 
     return {
@@ -488,6 +844,58 @@ if "llm_response" not in st.session_state:
     st.session_state.llm_response = None
 if "used_fallback" not in st.session_state:
     st.session_state.used_fallback = False
+
+# -----------------------------------------------------------------------------
+# UI HELPERS
+# -----------------------------------------------------------------------------
+
+def render_support_card(link: Dict):
+    """
+    Render one support service card without ever letting raw HTML from the LLM
+    leak into the DOM.
+    """
+    priority = (link.get("priority") or "medium").lower()
+
+    if priority == "high":
+        bg = "#fef2f2"
+        border = "#dc2626"
+        badge_html = "<span style='background:#dc2626;color:white;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600;'>HIGH PRIORITY</span>"
+    elif priority == "medium":
+        bg = "#fffbeb"
+        border = "#f59e0b"
+        badge_html = ""
+    else:
+        bg = "#f9fafb"
+        border = "#e5e7eb"
+        badge_html = ""
+
+    name = clean_text_for_html(link.get("name", "Support Service"))
+    desc = clean_text_for_html(link.get("description", ""))
+    phone_raw = link.get("phone")
+    phone = clean_text_for_html(phone_raw) if phone_raw else ""
+    url = link.get("url") or "#"
+
+    phone_bit = f"📞 <strong>{phone}</strong>&nbsp;&nbsp;" if phone else ""
+
+    # IMPORTANT: no leading newline or indentation – HTML starts at column 0
+    card_html = (
+        f"<div style='border-radius:12px;border:1px solid {border};"
+        f"background:{bg};padding:1.1rem 1.25rem;margin-bottom:1rem;color:#111827;'>"
+        f"  <div style='display:flex;align-items:center;justify-content:space-between;gap:0.5rem;'>"
+        f"    <strong style='font-size:1.05rem;color:#111827;'>{name}</strong>"
+        f"    {badge_html}"
+        f"  </div>"
+        f"  <div style='margin:0.4rem 0 0.6rem 0;color:#4b5563;font-size:0.95rem;'>"
+        f"    {desc}"
+        f"  </div>"
+        f"  <div style='margin:0;font-size:0.95rem;color:#111827;'>"
+        f"    {phone_bit}"
+        f"    🔗 <a href='{html.escape(url)}' target='_blank'>Visit website</a>"
+        f"  </div>"
+        f"</div>"
+    )
+
+    st.markdown(card_html, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # PAGES
@@ -657,16 +1065,22 @@ def render_results():
         </div>
     """, unsafe_allow_html=True)
 
+    payload = st.session_state.llm_payload or {}
+    llm_response = st.session_state.llm_response or {}
+
+    # If LLM gave something weird (string / list), drop back to fallback
+    if not isinstance(llm_response, dict):
+        print("Unexpected LLM response type:", type(llm_response), llm_response)
+        st.error("❌ Unexpected response format from support agent. Using fallback summary.")
+        llm_response = get_fallback_response(payload)
+
     st.success(f"📋 **Reference:** `{st.session_state.reference}` — Save this for your records")
 
-    payload = st.session_state.llm_payload
-    llm_response = st.session_state.llm_response
-
-    assessment = payload["assessment"]
-    score = assessment["total_score"]
-    risk_level = assessment["risk_level"]
-    risk_desc = assessment["risk_description"]
-    response_time = assessment["recommended_response_time"]
+    assessment = payload.get("assessment", {})
+    score = assessment.get("total_score", 0)
+    risk_level = assessment.get("risk_level", "MEDIUM")
+    risk_desc = assessment.get("risk_description", "")
+    response_time = assessment.get("recommended_response_time", "Within 10 working days")
 
     if risk_level == "HIGH":
         risk_class = "risk-high"
@@ -677,69 +1091,58 @@ def render_results():
 
     tab_user, tab_officer = st.tabs(["👤 Your Support & Advice", "👔 Officer View"])
 
-    # USER VIEW
+    # ---------------- USER VIEW ----------------
     with tab_user:
-        user_resp = llm_response.get("user_response", {})
+        user_resp_raw = llm_response.get("user_response", {})
 
-        raw_greeting = user_resp.get("greeting", "Thank you for completing this assessment.")
-        greeting = clean_text_for_html(raw_greeting)
+        if isinstance(user_resp_raw, dict):
+            user_resp = user_resp_raw
+            greeting_src = user_resp.get(
+                "greeting",
+                "Thank you for completing this assessment."
+            )
+        else:
+            # If model just gave a string, treat it as the greeting text
+            print("user_response is not a dict:", type(user_resp_raw), user_resp_raw)
+            user_resp = {}
+            greeting_src = str(user_resp_raw) or "Thank you for completing this assessment."
+
+        greeting = clean_text_for_html(greeting_src)
         st.markdown("### ")
         st.markdown(greeting)
 
-        raw_emergency = user_resp.get("emergency_note")
-        if raw_emergency:
-            emergency = clean_text_for_html(raw_emergency)
+        emergency_raw = user_resp.get("emergency_note") if isinstance(user_resp, dict) else None
+        if emergency_raw:
+            emergency = clean_text_for_html(emergency_raw)
             st.error(f"🆘 **Urgent:** {emergency}")
 
         st.markdown("---")
         st.markdown("### Support Services For You")
 
-        support_links = user_resp.get("support_links", [])
+        support_links = user_resp.get("support_links", []) if isinstance(user_resp, dict) else []
+        if not isinstance(support_links, list):
+            print("support_links not a list:", type(support_links), support_links)
+            support_links = []
+
         for link in support_links:
-            priority = (link.get("priority") or "medium").lower()
-
-            if priority == "high":
-                bg = "#fef2f2"
-                border = "#dc2626"
-                badge = "<span style='background:#dc2626;color:white;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600;'>HIGH PRIORITY</span>"
-            elif priority == "medium":
-                bg = "#fffbeb"
-                border = "#f59e0b"
-                badge = ""
+            if isinstance(link, dict):
+                render_support_card(link)
             else:
-                bg = "#f9fafb"
-                border = "#e5e7eb"
-                badge = ""
-
-            name = clean_text_for_html(link.get("name", "Support Service"))
-            desc = clean_text_for_html(link.get("description", ""))
-            phone_raw = link.get("phone")
-            phone = clean_text_for_html(phone_raw) if phone_raw else ""
-            url = link.get("url") or "#"
-
-            st.markdown(f"""
-                <div style="border-radius:12px;border:1px solid {border};background:{bg};padding:1.1rem 1.25rem;margin-bottom:1rem;">
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;">
-                        <strong style="font-size:1.05rem;">{name}</strong>
-                        {badge}
-                    </div>
-                    <div style="margin:0.4rem 0 0.6rem 0;color:#4b5563;font-size:0.95rem;">
-                        {desc}
-                    </div>
-                    <div style="margin:0;font-size:0.95rem;">
-                        {("📞 <strong>" + phone + "</strong>&nbsp;&nbsp;" ) if phone else ""}
-                        🔗 <a href="{url}" target="_blank">Visit website</a>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+                # Log but don't crash if the model put something odd in the list
+                print("Non-dict support link:", type(link), link)
 
         st.markdown("---")
         st.markdown("### What Happens Next")
-        raw_next_steps = user_resp.get(
-            "next_steps",
-            f"A housing support officer will review your case within {response_time}."
+
+        next_steps_src = (
+            user_resp.get("next_steps")
+            if isinstance(user_resp, dict)
+            else None
         )
-        next_steps = clean_text_for_html(raw_next_steps)
+        if not next_steps_src:
+            next_steps_src = f"A housing support officer will review your case within {response_time}."
+
+        next_steps = clean_text_for_html(next_steps_src)
         st.markdown(next_steps)
 
         if risk_level == "HIGH":
@@ -749,9 +1152,12 @@ def render_results():
         else:
             st.info(f"📧 **Standard Pathway** — Response within {response_time}")
 
-    # OFFICER VIEW
+    # ---------------- OFFICER VIEW ----------------
     with tab_officer:
-        officer_resp = llm_response.get("officer_summary", {})
+        officer_raw = llm_response.get("officer_summary", {})
+        officer_resp = officer_raw if isinstance(officer_raw, dict) else {}
+        if not isinstance(officer_raw, dict):
+            print("officer_summary is not a dict:", type(officer_raw), officer_raw)
 
         st.markdown("### Risk Assessment")
 
@@ -763,7 +1169,8 @@ def render_results():
                     <span class="risk-badge {risk_class}">{risk_level} RISK</span>
                 </div>
             """, unsafe_allow_html=True)
-            st.caption(risk_desc)
+            if risk_desc:
+                st.caption(risk_desc)
 
         st.markdown("""
         | Threshold | Level | Response Time |
@@ -799,7 +1206,7 @@ def render_results():
         breakdown_data: List[Dict] = []
         for q in QUESTIONS:
             q_id = q["id"]
-            if q_id in payload["category_scores"]:
+            if q_id in payload.get("category_scores", {}):
                 cat = payload["category_scores"][q_id]
                 breakdown_data.append({
                     "Category": q_id.replace("_", " ").title(),
@@ -816,15 +1223,6 @@ def render_results():
 
         with st.expander("View LLM Response"):
             st.code(json.dumps(llm_response, indent=2), language="json")
-
-        st.markdown("---")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.button("📧 Create Case", use_container_width=True)
-        with col2:
-            st.button("📞 Schedule Call", use_container_width=True)
-        with col3:
-            st.button("📄 Export PDF", use_container_width=True)
 
     st.markdown("---")
     if st.button("Start New Assessment", use_container_width=True):
