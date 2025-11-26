@@ -30,13 +30,13 @@ This Streamlit application provides a professional, accessible interface for cit
 pip install -r requirements.txt
 
 # Run the application
-streamlit run housing_support_app.py
+streamlit run streamlit_app.py
 ```
 
 ## Running the Application
 
 ```bash
-streamlit run housing_support_app.py
+streamlit run streamlit_app.py
 ```
 
 The app will open in your browser at `http://localhost:8501`
@@ -83,7 +83,7 @@ The system calculates risk scores based on weighted responses:
 
 ### Adding Questions
 
-Edit the `QUESTIONS` list in `housing_support_app.py`:
+Edit the `QUESTIONS` list in `streamlit_app.py`:
 
 ```python
 {
